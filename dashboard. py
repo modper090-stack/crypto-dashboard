@@ -1,0 +1,74 @@
+import streamlit as st
+import requests
+import pandas as pd
+
+st.set_page_config(layout="wide")
+
+BINANCE = "https://fapi.binance.com"
+
+def symbols():
+    data = requests.get(f"{BINANCE}/fapi/v1/exchangeInfo").json()
+    return [s["symbol"] for s in data["symbols"]
+            if s["quoteAsset"] == "USDT" and s["contractType"] == "PERPETUAL"]
+
+def klines(sym, tf, limit):
+    return requests.get(f"{BINANCE}/fapi/v1/klines",
+                        params={"symbol": sym, "interval": tf, "limit": limit}).json()
+
+def weekly_sweep(sym):
+    p, c = klines(sym, "1w", 2)
+    ph, pl = float(p[2]), float(p[3])
+    ch, cl, cc = float(c[2]), float(c[3]), float(c[4])
+    if cl < pl and cc > pl:
+        return "BULLISH"
+    if ch > ph and cc < ph:
+        return "BEARISH"
+    return None
+
+def daily_confirm(sym, bias):
+    d = klines(sym, "1d", 2)[1]
+    o, c = float(d[1]), float(d[4])
+    if bias == "BULLISH" and c > o:
+        return True
+    if bias == "BEARISH" and c < o:
+        return True
+    return False
+
+def breaker(sym, bias):
+    c = klines(sym, "15m", 4)
+    a, b, d = c[-3], c[-2], c[-1]
+
+    if bias == "BULLISH":
+        if float(a[4]) < float(a[1]) and float(b[3]) < float(a[3]) and float(d[4]) > float(a[2]):
+            return "ENTRY"
+
+    if bias == "BEARISH":
+        if float(a[4]) > float(a[1]) and float(b[2]) > float(a[2]) and float(d[4]) < float(a[3]):
+            return "ENTRY"
+
+    return "WAIT"
+
+st.title("📊 Binance USDT Futures Dashboard")
+
+rows = []
+
+for sym in symbols():
+    try:
+        w = weekly_sweep(sym)
+        if not w:
+            continue
+        if not daily_confirm(sym, w):
+            continue
+
+        b = breaker(sym, w)
+        if b == "ENTRY":
+            rows.append({
+                "Coin": sym,
+                "Weekly Bias": w,
+                "15m Breaker": b
+            })
+    except:
+        pass
+
+df = pd.DataFrame(rows)
+st.dataframe(df, use_container_width=True)
