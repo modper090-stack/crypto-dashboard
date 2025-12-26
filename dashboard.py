@@ -1,65 +1,79 @@
 import streamlit as st
 import pandas as pd
+import requests
 import time
-from binance.client import Client
+import os
 
 st.set_page_config(page_title="Breaker Block Dashboard", layout="wide")
 
-client = Client()
+API_KEY = os.getenv("BINANCE_API_KEY", "")
+HEADERS = {"X-MBX-APIKEY": API_KEY}
 
-@st.cache_data(ttl=60)
+BASE_URL = "https://fapi.binance.com"
+
+@st.cache_data(ttl=120)
 def get_symbols():
-    info = client.futures_exchange_info()
-    return [s['symbol'] for s in info['symbols'] if s['quoteAsset'] == 'USDT']
+    url = f"{BASE_URL}/fapi/v1/exchangeInfo"
+    r = requests.get(url, headers=HEADERS, timeout=10)
+    data = r.json()
+    return [s["symbol"] for s in data["symbols"] if s["quoteAsset"] == "USDT"]
 
-def get_klines(symbol, interval, limit=100):
-    return client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+def get_klines(symbol, interval, limit=50):
+    url = f"{BASE_URL}/fapi/v1/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    r = requests.get(url, headers=HEADERS, params=params, timeout=10)
+    return r.json()
 
 def find_breaker(df):
     last = df.iloc[-1]
     prev = df.iloc[-2]
-
-    if last['close'] < prev['low']:
-        return "BEARISH"
-    if last['close'] > prev['high']:
-        return "BULLISH"
+    if last["close"] < prev["low"]:
+        return "SHORT"
+    if last["close"] > prev["high"]:
+        return "LONG"
     return None
 
-st.title("📊 Binance USDT Futures – Breaker Block Dashboard")
+st.title("📊 Binance Futures Breaker Block Screener")
 
 symbols = get_symbols()
 results = []
 
-for sym in symbols[:30]:  # limit for API safety
+progress = st.progress(0)
+total = min(len(symbols), 25)
+
+for i, sym in enumerate(symbols[:25]):
     try:
-        klines_15m = get_klines(sym, Client.KLINE_INTERVAL_15MINUTE, 50)
-        df = pd.DataFrame(klines_15m, columns=[
-            'time','open','high','low','close','vol',
-            'c1','c2','c3','c4','c5','c6'
+        kl = get_klines(sym, "15m")
+        df = pd.DataFrame(kl, columns=[
+            "time","open","high","low","close","vol",
+            "c1","c2","c3","c4","c5","c6"
         ])
-        df[['open','high','low','close']] = df[['open','high','low','close']].astype(float)
+        df[["open","high","low","close"]] = df[["open","high","low","close"]].astype(float)
 
-        breaker = find_breaker(df)
-
-        if breaker:
+        direction = find_breaker(df)
+        if direction:
             last = df.iloc[-1]
-            entry = (last['high'] + last['low']) / 2
+            entry = round((last["high"] + last["low"]) / 2, 4)
+            sl = round(last["high"] if direction == "SHORT" else last["low"], 4)
 
             results.append({
                 "PAIR": sym,
-                "BIAS": breaker,
-                "ENTRY": round(entry, 4),
-                "SL": round(last['high'] if breaker=="BEARISH" else last['low'], 4),
+                "BIAS": direction,
+                "ENTRY": entry,
+                "SL": sl,
                 "TF": "15m"
             })
 
-        time.sleep(0.3)
+        time.sleep(0.4)
+        progress.progress((i + 1) / total)
 
     except:
         continue
 
+progress.empty()
+
 if results:
-    st.success("Breaker Block setups found")
+    st.success("✅ Valid Breaker Block setups found")
     st.dataframe(pd.DataFrame(results))
 else:
-    st.warning("No active Breaker Block setups right now")
+    st.warning("❌ No valid setups right now — wait or refresh later")
