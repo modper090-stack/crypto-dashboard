@@ -11,7 +11,7 @@ st.title("📊 Binance USDT Futures – Live Dashboard")
 
 @st.cache_data(ttl=60)
 def get_futures_data():
-    url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+    url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
     response = requests.get(url, timeout=10)
 
     # SAFETY CHECK
