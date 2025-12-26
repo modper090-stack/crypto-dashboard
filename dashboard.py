@@ -1,79 +1,74 @@
+
 import streamlit as st
-import pandas as pd
 import requests
+import pandas as pd
 import time
-import os
 
-st.set_page_config(page_title="Breaker Block Dashboard", layout="wide")
-
-API_KEY = os.getenv("BINANCE_API_KEY", "")
-HEADERS = {"X-MBX-APIKEY": API_KEY}
+st.set_page_config(page_title="Weekly vs Daily Screener", layout="wide")
 
 BASE_URL = "https://fapi.binance.com"
 
-@st.cache_data(ttl=120)
-def get_symbols():
+@st.cache_data(ttl=300)
+def get_usdt_futures_symbols():
     url = f"{BASE_URL}/fapi/v1/exchangeInfo"
-    r = requests.get(url, headers=HEADERS, timeout=10)
-    data = r.json()
-    return [s["symbol"] for s in data["symbols"] if s["quoteAsset"] == "USDT"]
+    data = requests.get(url, timeout=10).json()
+    symbols = []
+    for s in data["symbols"]:
+        if s["quoteAsset"] == "USDT" and s["contractType"] == "PERPETUAL":
+            symbols.append(s["symbol"])
+    return symbols
 
-def get_klines(symbol, interval, limit=50):
+def get_klines(symbol, interval, limit):
     url = f"{BASE_URL}/fapi/v1/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
-    r = requests.get(url, headers=HEADERS, params=params, timeout=10)
-    return r.json()
+    return requests.get(url, params=params, timeout=10).json()
 
-def find_breaker(df):
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-    if last["close"] < prev["low"]:
-        return "SHORT"
-    if last["close"] > prev["high"]:
-        return "LONG"
-    return None
+st.title("📊 Binance Futures Weekly vs Daily Screener")
 
-st.title("📊 Binance Futures Breaker Block Screener")
+auto = st.checkbox("🔄 Auto Refresh (5 min)", value=True)
 
-symbols = get_symbols()
+symbols = get_usdt_futures_symbols()
+
 results = []
 
-progress = st.progress(0)
-total = min(len(symbols), 25)
+with st.spinner("Scanning coins..."):
+    for sym in symbols:
+        try:
+            w = get_klines(sym, "1w", 2)
+            d = get_klines(sym, "1d", 2)
 
-for i, sym in enumerate(symbols[:25]):
-    try:
-        kl = get_klines(sym, "15m")
-        df = pd.DataFrame(kl, columns=[
-            "time","open","high","low","close","vol",
-            "c1","c2","c3","c4","c5","c6"
-        ])
-        df[["open","high","low","close"]] = df[["open","high","low","close"]].astype(float)
+            weekly = w[-2]
+            daily = d[-2]
 
-        direction = find_breaker(df)
-        if direction:
-            last = df.iloc[-1]
-            entry = round((last["high"] + last["low"]) / 2, 4)
-            sl = round(last["high"] if direction == "SHORT" else last["low"], 4)
+            w_high = float(weekly[2])
+            w_low = float(weekly[3])
+            d_close = float(daily[4])
+
+            if d_close > w_high:
+                signal = "⬆ ABOVE WEEKLY HIGH"
+            elif d_close < w_low:
+                signal = "⬇ BELOW WEEKLY LOW"
+            else:
+                continue
 
             results.append({
-                "PAIR": sym,
-                "BIAS": direction,
-                "ENTRY": entry,
-                "SL": sl,
-                "TF": "15m"
+                "Symbol": sym,
+                "Weekly High": round(w_high, 4),
+                "Weekly Low": round(w_low, 4),
+                "Daily Close": round(d_close, 4),
+                "Signal": signal
             })
 
-        time.sleep(0.4)
-        progress.progress((i + 1) / total)
+        except:
+            continue
 
-    except:
-        continue
+df = pd.DataFrame(results)
 
-progress.empty()
+st.subheader("📌 Signals Found")
+st.dataframe(df, use_container_width=True)
 
-if results:
-    st.success("✅ Valid Breaker Block setups found")
-    st.dataframe(pd.DataFrame(results))
-else:
-    st.warning("❌ No valid setups right now — wait or refresh later")
+st.caption(f"Total signals: {len(df)}")
+
+if auto:
+    time.sleep(300)
+    st.rerun()
